@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # 1. Message Broker & Result Backend
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # 2. Database Metadata
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 3. Object Storage (S3-Compatible)
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_USER}
+    ports:
+      - "9000:9000" # API Port
+      - "9001:9001" # Web Console Port
+    volumes:
+      - minio_data:/data
+
+  # 4. Automasi Pembuatan Bucket MinIO (Portfolio Flex)
+  create-bucket:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for MinIO...';
+      sleep 5;
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/image-processing-bucket --ignore-existing;
+      mc anonymous set public myminio/image-processing-bucket;
+      echo 'Bucket created successfully!';
+      exit 0;
+      "
+
+  # 5. FastAPI Web Server
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - BUCKET_NAME=${BUCKET_NAME}
+    depends_on:
+      - db
+      - redis
+      - minio
+
+  # 6. Celery Background Worker
+  worker:
+    build: .
+    command: celery -A worker.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - BUCKET_NAME=${BUCKET_NAME}
+    depends_on:
+      - db
+      - redis
+      - minio
+
+# Definisi volume persisten agar data tidak hilang saat container direstart
+volumes:
+  postgres_data:
+  minio_data:
